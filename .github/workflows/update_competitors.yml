@@ -1,0 +1,68 @@
+name: Update competitors prices
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 4 * * *"
+
+concurrency:
+  group: competitors-parser
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r github_actions/requirements.txt
+          python -m playwright install --with-deps chromium
+
+      - name: Collect Beeline and Megafon
+        run: |
+          python direct_competitors_parser.py \
+            --site beeline \
+            --site megafon \
+            --output data/direct_competitors_open_sites_fixed.csv \
+            --json-output data/direct_competitors_open_sites_fixed.json
+
+      - name: Collect DNS and MTS with prices
+        run: python cloud_service/browser_price_scraper.py
+
+      - name: Build final result
+        run: |
+          python build_final_competitors_result.py \
+            --raw data/direct_competitors_open_sites_fixed.csv \
+            --output data/direct_competitors_final_open_sites.csv \
+            --json-output data/direct_competitors_final_open_sites.json
+          python merge_priced_competitors_result.py \
+            --base data/direct_competitors_final_open_sites.csv \
+            --priced data/browser_dns_mts_prices.csv \
+            --output data/direct_competitors_final.csv \
+            --json-output data/direct_competitors_final.json
+
+      - name: Validate final result
+        run: |
+          python validate_competitors_result.py \
+            --input data/direct_competitors_final.csv \
+            --report data/direct_competitors_validation.json
+
+      - name: Upload to Google Sheet via Apps Script
+        env:
+          APPS_SCRIPT_WEBAPP_URL: ${{ secrets.APPS_SCRIPT_WEBAPP_URL }}
+          APPS_SCRIPT_UPLOAD_TOKEN: ${{ secrets.APPS_SCRIPT_UPLOAD_TOKEN }}
+        run: |
+          python github_actions/post_to_apps_script.py \
+            --input data/direct_competitors_final.csv \
+            --validation data/direct_competitors_validation.json
